@@ -8,12 +8,11 @@ https://youtu.be/UMGsdQlZP_E
 
 
 ## Compilation
-- please find the main.c. Microchip Studio is really bloated hence we placed the whole project in repo.
+- please find the main.c. Microchip Studio is really bloated hence we placed the whole project in repo. You may need to setup the uart functionalities.
 - the controller folder contains necessary files for NodeMCU. You may nead to install the AdaFruit bluefruit library.
 
 
 ### BLUETOOTH
-
 
 Node MCU - Level Shifter - Arduino
 
