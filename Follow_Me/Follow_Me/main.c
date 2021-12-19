@@ -7,72 +7,104 @@
 #define F_CPU 16000000UL
 #include "util/delay.h"
 
-#include "uart.h"
+#include "myuart.h"
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 volatile unsigned long previous = 0;
 volatile unsigned long current = 0;
 volatile unsigned long duration = 0;
 volatile unsigned long distance = 0;
 volatile unsigned long overflow = 0;
-int IRleft, IRright, DirRight, DirLeft;
+char buffer[25] = {'\0'};
+
+/************************************************************************/
+/* initialization of Timer 0 PWM										*/
+/************************************************************************/
+void intialize_Timer0_PWM() {
+    cli();
+    //OUTPUT OF ARDUINO: SERVO
+    DDRD |= (1 << DDD5); // set pin D5 as output (OC0B)
+
+    // set timer prescaler to 1024
+    TCCR0B |= (1 << CS00);
+    TCCR0B &= ~(1 << CS01);
+    TCCR0B |= (1 << CS02);
+
+    // phase correct PWM counting up to TOP
+    TCCR0A |= (1 << WGM00);
+    TCCR0A &= ~(1 << WGM01);
+    TCCR0B &= ~(1 << WGM02);
+
+    // clear OC0B on compare match, set OC0B at Bottom
+    TCCR0A &= ~(1 << COM0B0);
+    TCCR0A |= (1 << COM0B1);
+    OCR0B = 0;
+    sei();
+
+    cli();
+}
 
 
 /************************************************************************/
-/* initialize Timer 1 PWM                                                */
+/* initialization of Timer 1 PWM										*/
 /************************************************************************/
 void intialize_Timer1_PWM() {
+    cli();
+    //INPUT OF ARDUINO: ULTRASONIC
+    DDRD |= (1 << DDD7);    // set pin D7 as output
+    DDRB &= ~(1 << DDB0);   // set pin B0 as input (input capture timer 1)
+    PORTB |= (1 << PORTB0); // enable internal pull up resistor
+
+    // initialize ultrasonic timer 1
+    TCCR1B &= ~(1 << CS10); // set timer prescaler to 8
+    TCCR1B |= (1 << CS11);
+    TCCR1B &= ~(1 << CS12);
+
+    // input capture configurations
+    TIMSK1 |= (1 << ICIE1); // enable input capture interrupt
+    TCCR1B |= (1 << ICES1); // detecting rising edge
+    TIFR1 |= (1 << ICF1);   // clear input capture flag
+    TIFR1 |= (1 << TOV1);  // overflow flag
+
+    sei();
+}
+
+/************************************************************************/
+/* initialize Timer 2 PWM                                                */
+/************************************************************************/
+void intialize_Timer2_PWM() {
   cli();               // disable global interrupts
-  DDRD |= (1 << DDD3); // set pin D3 as output (OC2B)
+    //OUTPUT OF ARDUINO: MOTORS
+  DDRD |= (1 << DDD3); // set pin D3 as output (OC2B) RIGHT
+  DDRB |= (1 << DDB3); // set pin D3 as output (OC2A) LEFT
 
   // set timer prescaler to 1024
   TCCR2B |= (1 << CS20);
   TCCR2B |= (1 << CS21);
   TCCR2B |= (1 << CS22);
 
-  // set phase correct
+  // set phase correct counting up to TOP
   TCCR2A |= (1 << WGM20);
   TCCR2A &= ~(1 << WGM21);
-  TCCR2B |= (1 << WGM22);
+  TCCR2B &= ~(1 << WGM22);
 
   // clear OC2B on compare match, set OC2B at Bottom
   TCCR2A &= ~(1 << COM2B0);
   TCCR2A |= (1 << COM2B1);
 
-  OCR2A = 255;  // freq of 20Hz for the motors, OCR0A=16MHz/(2*1024*30)
-  OCR2B = OCR2A/2; // 50 % duty cycle
+  // clear OC2A on compare match, set OC2A at Bottom
+  TCCR2A &= ~(1 << COM2A0);
+  TCCR2A |= (1 << COM2A1);
+
+  OCR2A = 0;  // duty cycle of left wheels (speed)
+  OCR2B = 0; // duty cycle of right wheels (speed)
   sei(); // enable global interrupts
-}
-
-/************************************************************************/
-/* initialization of Timer 0 PWM										*/
-/************************************************************************/
-void intialize_Timer0_PWM() {
-	cli();
-	//OUTPUT OF ARDUINO: LEFT MOTORS
-	DDRD |= (1 << DDD5); // set pin D5 as output (OC0B)
-	
-	// set timer prescaler to 1024
-	TCCR0B |= (1 << CS00);
-	TCCR0B &= ~(1 << CS01);
-	TCCR0B |= (1 << CS02);
-
-	// phase correct PWM
-	TCCR0A |= (1 << WGM00);
-	TCCR0A &= ~(1 << WGM01);
-	TCCR0B |= (1 << WGM02);
-
-	// clear OC0B on compare match, set OC0B at Bottom
-	TCCR0A &= ~(1 << COM0B0);
-	TCCR0A |= (1 << COM0B1);
-	OCR0A = 255;  // freq of 20Hz for the motors, OCR0A=16MHz/(2*1024*20)
-	OCR0B = OCR0A/2; // 50 % duty cycle
-	sei();
 }
 
 /************************************************************************/
@@ -82,21 +114,15 @@ void intialize_Timer0_PWM() {
 void initialize() {
   cli(); // disable global interrupts
 
-  // initialize ultrasonic ports
-  DDRD |= (1 << DDD7);    // set pin D7 as output
-  DDRB &= ~(1 << DDB0);   // set pin B0 as input (input capture timer 1)
-  PORTB |= (1 << PORTB0); // enable internal pull up resistor
+  DDRD &= ~(1 << DDD6);    // set pin D6 as input (Start/Stop)
 
-  // initialize ultrasonic timer 1
-  TCCR1B &= ~(1 << CS10); // set timer prescaler to 8
-  TCCR1B |= (1 << CS11);
-  TCCR1B &= ~(1 << CS12);
-  
-  // input capture configurations
-  TIMSK1 |= (1 << ICIE1); // enable input capture interrupt
-  TCCR1B |= (1 << ICES1); // detecting rising edge
-  TIFR1 |= (1 << ICF1);   // clear input capture flag
-  TIFR1 |= (1 << TOV1);  // overflow flag   
+  // IR Sensors
+  DDRB &= ~(1 << DDB4);    // set pin B4 as input (left IR sensor)
+  DDRB &= ~(1 << DDB5);    // set pin B5 as input (right IR sensor)
+
+  // motors direction
+  DDRD |= (1 << DDD2);    // set pin D2 as output (right)
+  DDRD |= (1 << DDD4);    // set pin D4 as output (left)
  
   sei(); // enable global interrupts
 }
@@ -125,6 +151,7 @@ ISR(TIMER1_CAPT_vect) { // ultrasonic
     } 
 	
     distance = duration / (2 * 58); // in cm
+
   }
   previous = current;
   TCCR1B ^= (1 << ICES1); // toggle detecting edge
@@ -169,69 +196,126 @@ if ((TCCR1B & (1 << ICES1))) { // rising edge -- setup dot and dash
  * */
 
 void GoForward() {
-  DirLeft = 1;
-  DirRight = 1;
-  OCR0B = 120;
-  OCR2B = 120;
+    PORTD |= (1 << PORTD4);   // direction of left wheels is forward
+    PORTD &= ~(1 << PORTD2);   // direction of right wheels is forward
+    OCR2A = 120;
+    OCR2B = 120;
 }
 
 void GoBackward() {
-  DirLeft = 0;
-  DirRight = 0;
-  // changed this to 50% duty cycle for testing. 
-  OCR0B = OCR0A/2;
-  OCR2B = OCR2A/2;
+    PORTD &= ~(1 << PORTD4);   // direction of left wheels is backward
+    PORTD |= (1 << PORTD2);   // direction of right wheels is backward
+    OCR2A = 120;
+    OCR2B = 120;
 }
 
 void GoRight() {
-  DirLeft = 1;  // motors 1,2
-  DirRight = 0; // motors 3,4
-  OCR0B = 200;
-  OCR2B = 100;
+    PORTD |= (1 << PORTD4);   // direction of left wheels is forward
+    PORTD &= ~(1 << PORTD2);   // direction of right wheels is forward
+    OCR2A = 250;
+    OCR2B = 50;
 }
 
 void GoLeft() {
-  DirLeft = 0;
-  DirRight = 1;
-  OCR0B = 100;
-  OCR2B = 200;
+    PORTD |= (1 << PORTD4);   // direction of left wheels is forward
+    PORTD &= ~(1 << PORTD2);   // direction of right wheels is forward
+    OCR2A = 50;
+    OCR2B = 250;
 }
 
 void Stop() {
-  DirLeft = 1;
-  DirRight = 1;
-  OCR0B = 0;
-  OCR2B = 0;
+    PORTD |= (1 << PORTD4);   // direction of left wheels is forward
+    PORTD &= ~(1 << PORTD2);   // direction of right wheels is forward
+    OCR2A = 0;
+    OCR2B = 0;
 }
 
 int main(void) {
-  const int baud_rate = 9600;
-  initialize_UART(baud_rate);
-  intialize_Timer0_PWM();
-  intialize_Timer1_PWM();
-  initialize();
+    int count = 0;
+    UART_initialize();
+    //intialize_Timer0_PWM(); // servo motor
+    intialize_Timer1_PWM(); // ultrasonic
+    intialize_Timer2_PWM(); // motors speed
+    initialize();
+	DDRB &= ~(1 << DDB2); // BLUETOOTH
+	DDRB &= ~(1 << DDB1); // FORWARD
+	DDRD &= ~(1 << DDD5); // BACKWARD
+	
 
-  while (1) {
-    // ultrasonic trigger every 60ms
-    PORTD |= (1 << PORTD7);
-    _delay_ms(0.1);
-    PORTD &= ~(1 << PORTD7);
-    _delay_ms(60);
+    while (1) {
+        // ultrasonic trigger every 60ms
+        PORTD |= (1 << PORTD7);
+        _delay_ms(0.1);
+        PORTD &= ~(1 << PORTD7);
+        _delay_ms(60);
 
-    char buffer[25] = {'\0'};
-    sprintf(buffer, "distance %ld, overflow %ld\n", distance, overflow);
-    putstring_UART(buffer);
+        //sprintf(buffer, "distance %ld, overflow %ld\n", distance, overflow);
+        //UART_putstring(buffer);
 
-    if ((IRright == 1) && (IRleft == 1) && (distance > 10 && distance < 30)) {
-      GoForward();
-    } else if ((IRright == 1) && (IRleft == 0)) {
-      GoLeft();
-    } else if ((IRright == 0) && (IRleft == 1)) {
-      GoRight();
-    } else if (((IRright == 1) && (IRleft == 1)) && ((distance > 5) && (distance < 10))) {
-      Stop();
-    } else if (distance < 5) {
-      GoBackward();
-    }
-  }
+        if ((PIND & (1 << PIND6))) {
+            _delay_ms(80);  // debouncing
+            if ((PIND & (1 << PIND6))) {
+                count++;
+            }
+		}
+		
+		if (count % 2) { // button press
+
+			   /*// servo code
+			   if ((PINB & (1 << PINB4)) && (PINB & (1 << PINB5))) { //if nothing is detected
+				   for (float i = 0; i < 20; i++) {
+					   OCR0B++;     // duty cycle servo
+					   _delay_ms(100);
+				   }
+				   _delay_ms(100);
+				   for (float i = 0; i < 20; i++) {
+					   OCR0B--;     // duty cycle for servo
+					   _delay_ms(100);
+				   }
+				   _delay_ms(100);
+				   OCR0B = 0;
+			   }
+			   else {
+				   OCR0B = 0;
+			   } 
+			   */
+
+			if ((!(PINB & (1 << PINB4))) && (!(PINB & (1 << PINB5))) && ((distance > 8) && (distance < 30))) {
+				GoForward();
+			}
+			else if ((!(PINB & (1 << PINB5))) && (PINB & (1 << PINB4))) { // only right
+				GoRight();
+			}
+			else if ((PINB & (1 << PINB5)) && (!(PINB & (1 << PINB4)))) { // only left
+				GoLeft();
+			}
+			else if (distance < 5) {
+				GoBackward();
+			}
+			else {
+				Stop();
+			}
+		}
+		else {
+			
+			if (!(PINB & (1 << PINB2))) // BLUETOOTH IS ON
+			{
+				if (!(PINB & (1 << PINB1)))
+				{
+					GoLeft();
+					//_delay_ms(1000);
+				}
+				
+				if (!(PIND & (1 << PIND5)))
+				{
+					GoRight();
+					//_delay_ms(1000);
+				}
+			} else {
+			
+				OCR2A = 0;
+				OCR2B = 0;
+			}
+		}	
+	}
 }
